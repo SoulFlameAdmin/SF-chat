@@ -1,0 +1,34 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+
+    "waiting": {
+      "slot": {
+        ".read": "auth != null",
+        ".write": "auth != null"
+      }
+    },
+
+    "presence": {
+      "$uid": {
+        ".read": "auth != null",
+        ".write": "auth != null && auth.uid === $uid"
+      }
+    },
+
+    "matches": {
+      "$uid": {
+        ".read": "auth != null && auth.uid === $uid",
+        ".write": "auth != null"
+      }
+    },
+
+    "rooms": {
+      "$roomId": {
+        ".read": "auth != null && data.child('participants').child(auth.uid).val() === true",
+        ".write": "auth != null && ( (!data.exists() && newData.child('participants').child(auth.uid).val() === true) || (data.child('participants').child(auth.uid).val() === true) )"
+      }
+    }
+  }
+}

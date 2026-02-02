@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>Stranger Chat • 1v1</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+
+<body>
+  <div class="chat" id="chat">
+    <div class="chat-title">
+      <h1>STRANGER CHAT</h1>
+      <h2 id="status">Booting…</h2>
+
+      <figure class="avatar">
+        <img src="https://s3-us-west-2.amazonaws.com/s.cdpn.io/156381/profile/profile-80.jpg" alt="avatar" />
+      </figure>
+
+      <div class="title-actions">
+        <button class="btn" id="btnFind" type="button">Find</button>
+        <button class="btn btn-ghost" id="btnNext" type="button" disabled>Next</button>
+      </div>
+    </div>
+
+    <div class="messages">
+      <div class="messages-content" id="messages"></div>
+    </div>
+
+    <div class="message-box">
+      <textarea class="message-input" id="messageInput" placeholder="Type message…" disabled></textarea>
+      <button type="button" class="message-submit" id="sendBtn" disabled>Send</button>
+    </div>
+  </div>
+
+  <div class="bg" aria-hidden="true"></div>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
