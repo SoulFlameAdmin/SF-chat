@@ -1,0 +1,7 @@
+cd d EOMEGLE
+git init
+git add .
+git commit -m init SF-chat
+git branch -M main
+git remote add origin httpsgithub.comSoulFlameAdminSF-chat.git
+git push -u origin main
