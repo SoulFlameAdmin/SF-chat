@@ -1,4 +1,4 @@
-// E:\OMEGLE\app_public.js
+// E:\OMEGLE\app_public.js (FIXED)
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
 import {
   getDatabase, ref, push, onChildAdded, serverTimestamp,
@@ -10,143 +10,215 @@ import {
 
 import { firebaseConfig } from "./firebase-config.js";
 
-const app = initializeApp(firebaseConfig);
-const db = getDatabase(app);
-const auth = getAuth(app);
+// ---------- Anti double-init guard (ако случайно се зареди 2 пъти) ----------
+if (window.__SF_PUBLIC_CHAT_BOOTED__) {
+  console.warn("SF Public Chat already booted — skipping duplicate init.");
+} else {
+  window.__SF_PUBLIC_CHAT_BOOTED__ = true;
 
-// UI
-const messagesEl = document.getElementById("messages");
-const inputEl = document.getElementById("messageInput");
-const sendBtn = document.getElementById("sendBtn");
-const btnFind = document.getElementById("btnFind");
-const btnNext = document.getElementById("btnNext");
-const statusEl = document.getElementById("status");
+  const app = initializeApp(firebaseConfig);
+  const db = getDatabase(app);
+  const auth = getAuth(app);
 
-const AVATAR = "https://s3-us-west-2.amazonaws.com/s.cdpn.io/156381/profile/profile-80.jpg";
+  // UI
+  const messagesEl = document.getElementById("messages");
+  const inputEl = document.getElementById("messageInput");
+  const sendBtn = document.getElementById("sendBtn");
+  const btnFind = document.getElementById("btnFind");
+  const btnNext = document.getElementById("btnNext");
+  const statusEl = document.getElementById("status");
 
-let uid = null;
-let joined = false;
-let unsubMessages = null;
+  const AVATAR = "https://s3-us-west-2.amazonaws.com/s.cdpn.io/156381/profile/profile-80.jpg";
 
-const messagesRef = () => ref(db, "public/messages");
+  let uid = null;
+  let joined = false;
 
-function setStatus(t) { statusEl.textContent = t; }
+  // Listener state
+  let unsubMessages = null;
+  let messagesQ = null;
+  let messagesHandler = null;
 
-function scrollToBottom() {
-  messagesEl.scrollTo({ top: messagesEl.scrollHeight, behavior: "smooth" });
-}
+  // Dedupe по key (за да няма двойно рендериране)
+  let seenMsgKeys = new Set();
 
-function makeAvatar() {
-  const fig = document.createElement("figure");
-  fig.className = "avatar";
-  const img = document.createElement("img");
-  img.src = AVATAR;
-  img.alt = "avatar";
-  fig.appendChild(img);
-  return fig;
-}
+  // Anti double-send
+  let sending = false;
+  let lastSendAt = 0;
+  let lastSendSig = "";
 
-function addMessage(text, { personal = false, system = false } = {}) {
-  const msg = document.createElement("div");
-  msg.className = "message new" + (personal ? " message-personal" : "");
-  if (!personal && !system) msg.appendChild(makeAvatar());
+  const messagesRef = () => ref(db, "public/messages");
 
-  msg.appendChild(document.createTextNode(text));
-  if (system) {
-    msg.style.opacity = "0.8";
-    msg.style.fontStyle = "italic";
+  function setStatus(t) { statusEl.textContent = t; }
+
+  function scrollToBottom() {
+    messagesEl.scrollTo({ top: messagesEl.scrollHeight, behavior: "smooth" });
   }
 
-  messagesEl.appendChild(msg);
-  void msg.offsetWidth;
-  scrollToBottom();
-}
+  function makeAvatar() {
+    const fig = document.createElement("figure");
+    fig.className = "avatar";
+    const img = document.createElement("img");
+    img.src = AVATAR;
+    img.alt = "avatar";
+    fig.appendChild(img);
+    return fig;
+  }
 
-function clearChat() {
-  messagesEl.innerHTML = "";
-}
+  function addMessage(text, { personal = false, system = false } = {}) {
+    const msg = document.createElement("div");
+    msg.className = "message new" + (personal ? " message-personal" : "");
+    if (!personal && !system) msg.appendChild(makeAvatar());
 
-async function joinLobby() {
-  if (joined) return;
-  joined = true;
+    msg.appendChild(document.createTextNode(text));
+    if (system) {
+      msg.style.opacity = "0.8";
+      msg.style.fontStyle = "italic";
+    }
 
-  btnFind.disabled = true;
-  btnNext.disabled = false;
-  inputEl.disabled = false;
-  sendBtn.disabled = false;
+    messagesEl.appendChild(msg);
+    void msg.offsetWidth;
+    scrollToBottom();
+  }
 
-  clearChat();
-  addMessage("You joined the lobby.", { system: true });
-  setStatus("Lobby • connected");
+  function clearChat() {
+    messagesEl.innerHTML = "";
+    seenMsgKeys = new Set();
+  }
 
-  // listen last 200 messages
-  const q = query(messagesRef(), limitToLast(200));
-  unsubMessages = onChildAdded(q, (snap) => {
-    const m = snap.val();
-    if (!m || !m.text) return;
-    addMessage(m.text, { personal: m.uid === uid });
-  });
-}
-
-async function leaveLobby() {
-  if (!joined) return;
-  joined = false;
-
-  try {
-    if (unsubMessages) unsubMessages();
+  function detachMessagesListener() {
+    try {
+      if (unsubMessages) unsubMessages();
+    } catch {}
     unsubMessages = null;
-    off(messagesRef());
-  } catch {}
 
-  btnFind.disabled = false;
-  btnNext.disabled = true;
-  inputEl.disabled = true;
-  sendBtn.disabled = true;
-
-  clearChat();
-  setStatus("Ready");
-}
-
-async function sendMessage() {
-  const text = (inputEl.value || "").trim();
-  if (!text || !uid) return;
-
-  inputEl.value = "";
-  inputEl.focus();
-
-  await push(messagesRef(), {
-    uid,
-    text,
-    at: serverTimestamp()
-  });
-}
-
-// UI events
-btnFind.addEventListener("click", joinLobby);
-btnNext.addEventListener("click", leaveLobby);
-
-sendBtn.addEventListener("click", sendMessage);
-inputEl.addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && !e.shiftKey) {
-    e.preventDefault();
-    sendMessage();
+    // extra safety (ако някой listener е останал)
+    try {
+      if (messagesQ && messagesHandler) off(messagesQ, "child_added", messagesHandler);
+    } catch {}
+    messagesQ = null;
+    messagesHandler = null;
   }
-});
 
-// Boot
-(async function boot() {
-  setStatus("Signing in…");
-  btnFind.disabled = true;
-  btnNext.disabled = true;
-  inputEl.disabled = true;
-  sendBtn.disabled = true;
+  async function joinLobby() {
+    if (!uid) return;
+    if (joined) return;
 
-  await signInAnonymously(auth);
+    joined = true;
 
-  onAuthStateChanged(auth, (user) => {
-    if (!user) return;
-    uid = user.uid;
-    setStatus("Ready");
+    btnFind.disabled = true;
+    btnNext.disabled = false;
+    inputEl.disabled = false;
+    sendBtn.disabled = false;
+
+    clearChat();
+    addMessage("You joined the lobby.", { system: true });
+    setStatus("Lobby • connected");
+
+    // ВАЖНО: махаме стар слушател (ако някога е останал)
+    detachMessagesListener();
+
+    // reset dedupe за нова сесия
+    seenMsgKeys = new Set();
+
+    // listen last 200 messages
+    messagesQ = query(messagesRef(), limitToLast(200));
+    messagesHandler = (snap) => {
+      // DEDUPE by key
+      const k = snap.key;
+      if (k && seenMsgKeys.has(k)) return;
+      if (k) seenMsgKeys.add(k);
+
+      const m = snap.val();
+      if (!m || !m.text) return;
+      addMessage(m.text, { personal: m.uid === uid });
+    };
+
+    unsubMessages = onChildAdded(messagesQ, messagesHandler);
+  }
+
+  async function leaveLobby() {
+    if (!joined) return;
+    joined = false;
+
+    detachMessagesListener();
+
     btnFind.disabled = false;
+    btnNext.disabled = true;
+    inputEl.disabled = true;
+    sendBtn.disabled = true;
+
+    clearChat();
+    setStatus("Ready");
+  }
+
+  async function sendMessage() {
+    if (!joined || !uid) return;
+
+    const text = (inputEl.value || "").trim();
+    if (!text) return;
+
+    // Anti double-send (Enter repeat / click spam / double trigger)
+    const now = Date.now();
+    const sig = `${text}::${uid}`;
+
+    if (sending) return;
+    if (now - lastSendAt < 350 && sig === lastSendSig) return;
+
+    sending = true;
+    lastSendAt = now;
+    lastSendSig = sig;
+
+    inputEl.value = "";
+    inputEl.focus();
+
+    try {
+      // Disable send briefly so UI can't double-trigger
+      sendBtn.disabled = true;
+
+      await push(messagesRef(), {
+        uid,
+        text,
+        at: serverTimestamp()
+      });
+    } finally {
+      // re-enable
+      setTimeout(() => {
+        sending = false;
+        if (joined) sendBtn.disabled = false;
+      }, 120);
+    }
+  }
+
+  // UI events (single attach because of global guard)
+  btnFind.addEventListener("click", joinLobby);
+  btnNext.addEventListener("click", leaveLobby);
+
+  sendBtn.addEventListener("click", sendMessage);
+
+  inputEl.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      // prevents key repeat spam
+      if (e.repeat) return;
+      e.preventDefault();
+      sendMessage();
+    }
   });
-})();
+
+  // Boot
+  (async function boot() {
+    setStatus("Signing in…");
+    btnFind.disabled = true;
+    btnNext.disabled = true;
+    inputEl.disabled = true;
+    sendBtn.disabled = true;
+
+    await signInAnonymously(auth);
+
+    onAuthStateChanged(auth, (user) => {
+      if (!user) return;
+      uid = user.uid;
+      setStatus("Ready");
+      btnFind.disabled = false;
+    });
+  })();
+}
