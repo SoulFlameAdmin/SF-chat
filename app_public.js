@@ -1,4 +1,4 @@
-// E:\OMEGLE\app_public.js (FIXED)
+// E:\OMEGLE\app_public.js (NO-DOUBLE-SEND HARDENED)
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
 import {
   getDatabase, ref, push, onChildAdded, serverTimestamp,
@@ -10,7 +10,7 @@ import {
 
 import { firebaseConfig } from "./firebase-config.js";
 
-// ---------- Anti double-init guard (ако случайно се зареди 2 пъти) ----------
+// ---------- Anti double-init guard ----------
 if (window.__SF_PUBLIC_CHAT_BOOTED__) {
   console.warn("SF Public Chat already booted — skipping duplicate init.");
 } else {
@@ -28,7 +28,12 @@ if (window.__SF_PUBLIC_CHAT_BOOTED__) {
   const btnNext = document.getElementById("btnNext");
   const statusEl = document.getElementById("status");
 
-  const AVATAR = "https://s3-us-west-2.amazonaws.com/s.cdpn.io/156381/profile/profile-80.jpg";
+  if (!messagesEl || !inputEl || !sendBtn || !btnFind || !btnNext || !statusEl) {
+    throw new Error("Missing required DOM elements (messages/messageInput/sendBtn/btnFind/btnNext/status).");
+  }
+
+  const AVATAR =
+    "https://s3-us-west-2.amazonaws.com/s.cdpn.io/156381/profile/profile-80.jpg";
 
   let uid = null;
   let joined = false;
@@ -38,17 +43,19 @@ if (window.__SF_PUBLIC_CHAT_BOOTED__) {
   let messagesQ = null;
   let messagesHandler = null;
 
-  // Dedupe по key (за да няма двойно рендериране)
+  // Dedupe by message key (render-side)
   let seenMsgKeys = new Set();
 
-  // Anti double-send
+  // Hard anti double-send
   let sending = false;
   let lastSendAt = 0;
   let lastSendSig = "";
 
   const messagesRef = () => ref(db, "public/messages");
 
-  function setStatus(t) { statusEl.textContent = t; }
+  function setStatus(t) {
+    statusEl.textContent = t;
+  }
 
   function scrollToBottom() {
     messagesEl.scrollTo({ top: messagesEl.scrollHeight, behavior: "smooth" });
@@ -91,7 +98,7 @@ if (window.__SF_PUBLIC_CHAT_BOOTED__) {
     } catch {}
     unsubMessages = null;
 
-    // extra safety (ако някой listener е останал)
+    // extra safety
     try {
       if (messagesQ && messagesHandler) off(messagesQ, "child_added", messagesHandler);
     } catch {}
@@ -114,16 +121,12 @@ if (window.__SF_PUBLIC_CHAT_BOOTED__) {
     addMessage("You joined the lobby.", { system: true });
     setStatus("Lobby • connected");
 
-    // ВАЖНО: махаме стар слушател (ако някога е останал)
     detachMessagesListener();
-
-    // reset dedupe за нова сесия
     seenMsgKeys = new Set();
 
     // listen last 200 messages
     messagesQ = query(messagesRef(), limitToLast(200));
     messagesHandler = (snap) => {
-      // DEDUPE by key
       const k = snap.key;
       if (k && seenMsgKeys.has(k)) return;
       if (k) seenMsgKeys.add(k);
@@ -157,54 +160,96 @@ if (window.__SF_PUBLIC_CHAT_BOOTED__) {
     const text = (inputEl.value || "").trim();
     if (!text) return;
 
-    // Anti double-send (Enter repeat / click spam / double trigger)
     const now = Date.now();
     const sig = `${text}::${uid}`;
 
+    // HARD: ако има дубликат в кратък прозорец -> стоп
     if (sending) return;
-    if (now - lastSendAt < 350 && sig === lastSendSig) return;
+    if (sig === lastSendSig && (now - lastSendAt) < 2000) return;
 
     sending = true;
     lastSendAt = now;
     lastSendSig = sig;
 
+    // UI
     inputEl.value = "";
     inputEl.focus();
+    sendBtn.disabled = true;
 
     try {
-      // Disable send briefly so UI can't double-trigger
-      sendBtn.disabled = true;
-
       await push(messagesRef(), {
         uid,
         text,
         at: serverTimestamp()
       });
+    } catch (err) {
+      console.error("push failed:", err);
+      // ако искаш: addMessage("Send failed.", { system: true });
     } finally {
-      // re-enable
-      setTimeout(() => {
-        sending = false;
-        if (joined) sendBtn.disabled = false;
-      }, 120);
+      sending = false;
+      if (joined) sendBtn.disabled = false;
     }
   }
 
-  // UI events (single attach because of global guard)
-  btnFind.addEventListener("click", joinLobby);
-  btnNext.addEventListener("click", leaveLobby);
+  // ==========================
+  // UI EVENTS — SINGLE SENDING PIPELINE
+  // ==========================
+  btnFind.addEventListener("click", joinLobby, { passive: true });
+  btnNext.addEventListener("click", leaveLobby, { passive: true });
 
-  sendBtn.addEventListener("click", sendMessage);
+  // Ако input+button са в <form>, единственото изпращане е чрез submit.
+  // Това убива Enter+click+submit дублиранията.
+  const formEl = inputEl.closest("form");
 
-  inputEl.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      // prevents key repeat spam
-      if (e.repeat) return;
+  if (formEl) {
+    // гарантираме, че бутонът е submit, и че click НЕ праща директно
+    try { sendBtn.type = "submit"; } catch {}
+
+    // Единствен handler:
+    formEl.addEventListener("submit", (e) => {
       e.preventDefault();
       sendMessage();
-    }
+    });
+
+    // Enter -> requestSubmit, НЕ sendMessage директно
+    inputEl.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        if (e.repeat) return;
+        e.preventDefault();
+        formEl.requestSubmit();
+      }
+    });
+
+    // Click: оставяме browser-а да trigger-не submit (не пращаме тук!)
+    sendBtn.addEventListener("click", (e) => {
+      // само safety: да не имаш втори onclick някъде
+      e.stopPropagation();
+    });
+  } else {
+    // Няма form — правим чисти handlers без дубли
+    sendBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      sendMessage();
+    });
+
+    inputEl.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        if (e.repeat) return;
+        e.preventDefault();
+        sendMessage();
+      }
+    });
+  }
+
+  // Safety: detach listener when leaving page
+  window.addEventListener("beforeunload", () => {
+    detachMessagesListener();
   });
 
+  // ==========================
   // Boot
+  // ==========================
   (async function boot() {
     setStatus("Signing in…");
     btnFind.disabled = true;
@@ -212,7 +257,13 @@ if (window.__SF_PUBLIC_CHAT_BOOTED__) {
     inputEl.disabled = true;
     sendBtn.disabled = true;
 
-    await signInAnonymously(auth);
+    try {
+      await signInAnonymously(auth);
+    } catch (err) {
+      console.error("signInAnonymously failed:", err);
+      setStatus("Auth error");
+      return;
+    }
 
     onAuthStateChanged(auth, (user) => {
       if (!user) return;
