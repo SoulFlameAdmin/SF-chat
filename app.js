@@ -114,6 +114,8 @@ let roomId = null;
 let peerUid = null;
 let isSearching = false;
 
+let joiningRoomId = null; // prevents double-join (duplicate listeners => duplicate messages)
+
 let unsubMatch = null;
 let unsubRoomGone = null;
 let unsubMsgs = null;
@@ -121,6 +123,13 @@ let unsubPeerTyping = null;
 
 function safeOff(unsub) {
   try { if (typeof unsub === "function") unsub(); } catch {}
+}
+
+function detachRoomListeners() {
+  if (unsubRoomGone) { safeOff(unsubRoomGone); unsubRoomGone = null; }
+  if (unsubMsgs) { safeOff(unsubMsgs); unsubMsgs = null; }
+  if (unsubPeerTyping) { safeOff(unsubPeerTyping); unsubPeerTyping = null; }
+  hideTyping();
 }
 
 // Helpers
@@ -191,6 +200,9 @@ function listenForMatch() {
   const handler = (snap) => {
     const v = snap.val();
     if (!v || !v.roomId) return;
+
+    // Guard: avoid double-join (duplicate listeners => duplicate messages)
+    if (roomId === v.roomId || joiningRoomId === v.roomId) return;
 
     // Matched!
     joinRoom(v.roomId, v.peer);
@@ -272,12 +284,6 @@ async function createRoomWith(otherUid) {
 
   await set(r, room);
 
-  // Write matches for both users (public write for other user's match requires relaxed rules)
-  // If you use the stricter rules in database.rules.json, this still works because we write only our own match,
-  // and the peer will join by detecting room existence & polling (optional).
-  //
-  // For simplicity, we attempt writing both. If rules block it, peer will still join if they are the waiting user
-  // because they will detect room removal and re-search. Recommended: keep provided rules for demo.
   const multi = {};
   multi[`matches/${uid}`] = { roomId: newRoomId, peer: otherUid, ts: Date.now() };
   multi[`matches/${otherUid}`] = { roomId: newRoomId, peer: uid, ts: Date.now() };
@@ -288,7 +294,7 @@ async function createRoomWith(otherUid) {
     await set(matchRef(), { roomId: newRoomId, peer: otherUid, ts: Date.now() });
   }
 
-  // Join immediately
+  // Join immediately (safe now: joinRoom has anti-double-join guard)
   await joinRoom(newRoomId, otherUid);
 }
 
@@ -305,58 +311,71 @@ async function clearWaitingIfMine() {
 
 // ---------- Room / chat ----------
 async function joinRoom(id, peer) {
-  roomId = id;
-  peerUid = peer;
-  isSearching = false;
+  if (!id) return;
 
-  // UI
-  setStatus("Connected");
-  setInputEnabled(true);
-  setFindEnabled(false);
-  btnNext.disabled = false;
+  // Prevent double join (this is the #1 reason for duplicated messages)
+  if (roomId === id || joiningRoomId === id) return;
+  joiningRoomId = id;
 
-  addMessage("You’re now chatting with a stranger. Say hi!", { system: true });
-
-  // Stop listening for match
-  if (unsubMatch) { safeOff(unsubMatch); unsubMatch = null; }
-
-  // Watch room existence (if room deleted => end)
-  const activePath = ref(db, `rooms/${roomId}/active`);
-  const roomGoneHandler = (snap) => {
-    if (!snap.exists()) endRoomFromRemote();
-    else if (snap.val() === false) endRoomFromRemote();
-  };
-  onValue(activePath, roomGoneHandler);
-  unsubRoomGone = () => off(activePath, "value", roomGoneHandler);
-
-  // Messages stream
-  const mref = msgsRef();
-  const msgHandler = (snap) => {
-    const v = snap.val();
-    if (!v || !v.text) return;
-    addMessage(v.text, { personal: v.uid === uid });
-  };
-  onChildAdded(mref, msgHandler);
-  unsubMsgs = () => off(mref, "child_added", msgHandler);
-
-  // Typing: ours
-  await set(myTypingRef(), false);
-  onDisconnect(myTypingRef()).remove();
-
-  // Typing: peer
-  const pref = peerTypingRef();
-  const peerTypingHandler = (snap) => {
-    const isTyping = !!snap.val();
-    if (isTyping) showTyping();
-    else hideTyping();
-  };
-  onValue(pref, peerTypingHandler);
-  unsubPeerTyping = () => off(pref, "value", peerTypingHandler);
-
-  // Ensure our match exists (self)
   try {
-    await set(matchRef(), { roomId, peer: peerUid, ts: Date.now() });
-  } catch {}
+    // Stop listening for match ASAP, иначе може да влезем втори път
+    if (unsubMatch) { safeOff(unsubMatch); unsubMatch = null; }
+
+    // Ако вече има закачени room listeners (от предишен/двоен join) — махни ги
+    detachRoomListeners();
+
+    roomId = id;
+    peerUid = peer;
+    isSearching = false;
+
+    // UI
+    setStatus("Connected");
+    setInputEnabled(true);
+    setFindEnabled(false);
+    btnNext.disabled = false;
+
+    addMessage("You’re now chatting with a stranger. Say hi!", { system: true });
+
+    // Watch room active / existence
+    const activePath = ref(db, `rooms/${roomId}/active`);
+    const roomGoneHandler = (snap) => {
+      if (!snap.exists()) endRoomFromRemote();
+      else if (snap.val() === false) endRoomFromRemote();
+    };
+    onValue(activePath, roomGoneHandler);
+    unsubRoomGone = () => off(activePath, "value", roomGoneHandler);
+
+    // Messages stream
+    const mref = msgsRef();
+    const msgHandler = (snap) => {
+      const v = snap.val();
+      if (!v || !v.text) return;
+      addMessage(v.text, { personal: v.uid === uid });
+    };
+    onChildAdded(mref, msgHandler);
+    unsubMsgs = () => off(mref, "child_added", msgHandler);
+
+    // Typing: ours
+    await set(myTypingRef(), false);
+    onDisconnect(myTypingRef()).remove();
+
+    // Typing: peer
+    const pref = peerTypingRef();
+    const peerTypingHandler = (snap) => {
+      const isTyping = !!snap.val();
+      if (isTyping) showTyping();
+      else hideTyping();
+    };
+    onValue(pref, peerTypingHandler);
+    unsubPeerTyping = () => off(pref, "value", peerTypingHandler);
+
+    // Ensure our match exists (self)
+    try {
+      await set(matchRef(), { roomId, peer: peerUid, ts: Date.now() });
+    } catch {}
+  } finally {
+    joiningRoomId = null;
+  }
 }
 
 function showTyping() {
@@ -396,9 +415,7 @@ async function leaveRoom({ keepChat = true } = {}) {
 
   // Detach listeners
   if (unsubMatch) { safeOff(unsubMatch); unsubMatch = null; }
-  if (unsubRoomGone) { safeOff(unsubRoomGone); unsubRoomGone = null; }
-  if (unsubMsgs) { safeOff(unsubMsgs); unsubMsgs = null; }
-  if (unsubPeerTyping) { safeOff(unsubPeerTyping); unsubPeerTyping = null; }
+  detachRoomListeners();
 
   // Best-effort: delete room (makes chat disappear)
   if (roomId) {
@@ -432,9 +449,7 @@ async function endRoomFromRemote() {
   roomId = null;
   peerUid = null;
 
-  if (unsubRoomGone) { safeOff(unsubRoomGone); unsubRoomGone = null; }
-  if (unsubMsgs) { safeOff(unsubMsgs); unsubMsgs = null; }
-  if (unsubPeerTyping) { safeOff(unsubPeerTyping); unsubPeerTyping = null; }
+  detachRoomListeners();
 
   setStatus("Stranger left");
   setInputEnabled(false);
@@ -464,9 +479,10 @@ async function setTypingOn() {
 btnFind.addEventListener("click", startSearch);
 
 btnNext.addEventListener("click", async () => {
-  await leaveRoom({ keepChat: false });
+  // startSearch() already calls leaveRoom() internally
   await startSearch();
 });
+
 sendBtn.addEventListener("click", sendMessage);
 
 inputEl.addEventListener("keydown", async (e) => {

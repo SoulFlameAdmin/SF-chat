@@ -1,0 +1,5 @@
+cd /d E:\OMEGLE
+git add .
+git commit -m "fix: prevent double messages"
+git push
+vercel --prod
