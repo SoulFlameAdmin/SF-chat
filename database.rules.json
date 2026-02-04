@@ -3,6 +3,28 @@
     ".read": false,
     ".write": false,
 
+    "public": {
+      "messagesById": {
+        ".indexOn": ["at"],
+        "$msgId": {
+          ".read": "auth != null",
+
+          ".write": "auth != null && !data.exists()",
+
+          ".validate": "newData.hasChildren(['uid','text','clientMsgId','clientAt','at'])"
+            + " && newData.child('uid').val() === auth.uid"
+            + " && newData.child('clientMsgId').val() === $msgId"
+            + " && newData.child('text').isString()"
+            + " && newData.child('text').val().length >= 1"
+            + " && newData.child('text').val().length <= 500"
+            + " && newData.child('clientAt').isNumber()"
+            + " && newData.child('clientAt').val() > 0"
+            + " && newData.child('clientAt').val() <= now + 600000"
+            + " && newData.child('clientAt').val() >= now - 2592000000"
+        }
+      }
+    },
+
     "waiting": {
       "slot": {
         ".read": "auth != null",

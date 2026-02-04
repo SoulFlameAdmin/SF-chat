@@ -1,8 +1,9 @@
-// E:\OMEGLE\app_public.js (NO-DOUBLE-SEND HARDENED)
+// E:\OMEGLE\app_public.js (NO-DOUBLE-SEND, IDEMPOTENT)
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
 import {
-  getDatabase, ref, push, onChildAdded, serverTimestamp,
-  query, limitToLast, off
+  getDatabase, ref, set,
+  onChildAdded, serverTimestamp,
+  query, limitToLast, off, orderByChild
 } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-database.js";
 import {
   getAuth, signInAnonymously, onAuthStateChanged
@@ -20,7 +21,7 @@ if (window.__SF_PUBLIC_CHAT_BOOTED__) {
   const db = getDatabase(app);
   const auth = getAuth(app);
 
-  // UI
+  // UI (IDs must exist in HTML)
   const messagesEl = document.getElementById("messages");
   const inputEl = document.getElementById("messageInput");
   const sendBtn = document.getElementById("sendBtn");
@@ -29,7 +30,7 @@ if (window.__SF_PUBLIC_CHAT_BOOTED__) {
   const statusEl = document.getElementById("status");
 
   if (!messagesEl || !inputEl || !sendBtn || !btnFind || !btnNext || !statusEl) {
-    throw new Error("Missing required DOM elements (messages/messageInput/sendBtn/btnFind/btnNext/status).");
+    throw new Error("Missing DOM elements: messages, messageInput, sendBtn, btnFind, btnNext, status");
   }
 
   const AVATAR =
@@ -43,19 +44,19 @@ if (window.__SF_PUBLIC_CHAT_BOOTED__) {
   let messagesQ = null;
   let messagesHandler = null;
 
-  // Dedupe by message key (render-side)
+  // Dedupe render by key (extra safety)
   let seenMsgKeys = new Set();
 
-  // Hard anti double-send
+  // Anti double-send guard
   let sending = false;
   let lastSendAt = 0;
   let lastSendSig = "";
 
-  const messagesRef = () => ref(db, "public/messages");
+  // IMPORTANT: deterministic write path
+  const messagesRootRef = () => ref(db, "public/messagesById");
+  const msgRef = (id) => ref(db, `public/messagesById/${id}`);
 
-  function setStatus(t) {
-    statusEl.textContent = t;
-  }
+  function setStatus(t) { statusEl.textContent = t; }
 
   function scrollToBottom() {
     messagesEl.scrollTo({ top: messagesEl.scrollHeight, behavior: "smooth" });
@@ -77,8 +78,9 @@ if (window.__SF_PUBLIC_CHAT_BOOTED__) {
     if (!personal && !system) msg.appendChild(makeAvatar());
 
     msg.appendChild(document.createTextNode(text));
+
     if (system) {
-      msg.style.opacity = "0.8";
+      msg.style.opacity = "0.85";
       msg.style.fontStyle = "italic";
     }
 
@@ -93,23 +95,16 @@ if (window.__SF_PUBLIC_CHAT_BOOTED__) {
   }
 
   function detachMessagesListener() {
-    try {
-      if (unsubMessages) unsubMessages();
-    } catch {}
+    try { if (unsubMessages) unsubMessages(); } catch {}
     unsubMessages = null;
 
-    // extra safety
-    try {
-      if (messagesQ && messagesHandler) off(messagesQ, "child_added", messagesHandler);
-    } catch {}
+    try { if (messagesQ && messagesHandler) off(messagesQ, "child_added", messagesHandler); } catch {}
     messagesQ = null;
     messagesHandler = null;
   }
 
   async function joinLobby() {
-    if (!uid) return;
-    if (joined) return;
-
+    if (!uid || joined) return;
     joined = true;
 
     btnFind.disabled = true;
@@ -124,8 +119,9 @@ if (window.__SF_PUBLIC_CHAT_BOOTED__) {
     detachMessagesListener();
     seenMsgKeys = new Set();
 
-    // listen last 200 messages
-    messagesQ = query(messagesRef(), limitToLast(200));
+    // listen last 200 messages ORDERED BY "at"
+    messagesQ = query(messagesRootRef(), orderByChild("at"), limitToLast(200));
+
     messagesHandler = (snap) => {
       const k = snap.key;
       if (k && seenMsgKeys.has(k)) return;
@@ -133,6 +129,7 @@ if (window.__SF_PUBLIC_CHAT_BOOTED__) {
 
       const m = snap.val();
       if (!m || !m.text) return;
+
       addMessage(m.text, { personal: m.uid === uid });
     };
 
@@ -157,13 +154,15 @@ if (window.__SF_PUBLIC_CHAT_BOOTED__) {
   async function sendMessage() {
     if (!joined || !uid) return;
 
-    const text = (inputEl.value || "").trim();
+    const raw = (inputEl.value || "");
+    const text = raw.trim();
     if (!text) return;
+    if (text.length > 500) return; // client-side mirror of rules
 
     const now = Date.now();
     const sig = `${text}::${uid}`;
 
-    // HARD: ако има дубликат в кратък прозорец -> стоп
+    // HARD anti double-trigger
     if (sending) return;
     if (sig === lastSendSig && (now - lastSendAt) < 2000) return;
 
@@ -171,20 +170,24 @@ if (window.__SF_PUBLIC_CHAT_BOOTED__) {
     lastSendAt = now;
     lastSendSig = sig;
 
-    // UI
     inputEl.value = "";
     inputEl.focus();
     sendBtn.disabled = true;
 
+    // This ID makes the write idempotent (rules allow create only)
+    const clientMsgId = crypto.randomUUID();
+
     try {
-      await push(messagesRef(), {
+      await set(msgRef(clientMsgId), {
         uid,
         text,
+        clientMsgId,
+        clientAt: now,
         at: serverTimestamp()
       });
     } catch (err) {
-      console.error("push failed:", err);
-      // ако искаш: addMessage("Send failed.", { system: true });
+      console.error("send failed:", err);
+      addMessage("Send failed (rules / network).", { system: true });
     } finally {
       sending = false;
       if (joined) sendBtn.disabled = false;
@@ -192,41 +195,32 @@ if (window.__SF_PUBLIC_CHAT_BOOTED__) {
   }
 
   // ==========================
-  // UI EVENTS — SINGLE SENDING PIPELINE
+  // UI EVENTS — SINGLE PIPELINE
   // ==========================
   btnFind.addEventListener("click", joinLobby, { passive: true });
   btnNext.addEventListener("click", leaveLobby, { passive: true });
 
-  // Ако input+button са в <form>, единственото изпращане е чрез submit.
-  // Това убива Enter+click+submit дублиранията.
+  // If input+button are inside a <form>, we send ONLY via submit.
   const formEl = inputEl.closest("form");
 
   if (formEl) {
-    // гарантираме, че бутонът е submit, и че click НЕ праща директно
+    // Make button submit, do NOT call sendMessage() from click
     try { sendBtn.type = "submit"; } catch {}
 
-    // Единствен handler:
     formEl.addEventListener("submit", (e) => {
       e.preventDefault();
       sendMessage();
     });
 
-    // Enter -> requestSubmit, НЕ sendMessage директно
     inputEl.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !e.shiftKey) {
         if (e.repeat) return;
         e.preventDefault();
-        formEl.requestSubmit();
+        formEl.requestSubmit(); // never call sendMessage directly here
       }
     });
-
-    // Click: оставяме browser-а да trigger-не submit (не пращаме тук!)
-    sendBtn.addEventListener("click", (e) => {
-      // само safety: да не имаш втори onclick някъде
-      e.stopPropagation();
-    });
   } else {
-    // Няма form — правим чисти handlers без дубли
+    // No form — still safe
     sendBtn.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
@@ -242,7 +236,6 @@ if (window.__SF_PUBLIC_CHAT_BOOTED__) {
     });
   }
 
-  // Safety: detach listener when leaving page
   window.addEventListener("beforeunload", () => {
     detachMessagesListener();
   });
@@ -260,7 +253,7 @@ if (window.__SF_PUBLIC_CHAT_BOOTED__) {
     try {
       await signInAnonymously(auth);
     } catch (err) {
-      console.error("signInAnonymously failed:", err);
+      console.error("auth failed:", err);
       setStatus("Auth error");
       return;
     }

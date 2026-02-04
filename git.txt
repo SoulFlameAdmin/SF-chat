@@ -1,7 +1,11 @@
-cd d EOMEGLE
+cd /d E:\OMEGLE
 git init
 git add .
-git commit -m init SF-chat
+git commit -m "init: SF-chat"
 git branch -M main
-git remote add origin httpsgithub.comSoulFlameAdminSF-chat.git
+git remote add origin https://github.com/SoulFlameAdmin/SF-chat.git
 git push -u origin main
+
+_______________________________________________________________________
+
+cd /d E:\OMEGLE && git init && git add . && git commit -m "init: SF-chat" && git branch -M main && git remote add origin https://github.com/SoulFlameAdmin/SF-chat.git && git push -u origin main
