@@ -8,9 +8,7 @@
         ".indexOn": ["at"],
         "$msgId": {
           ".read": "auth != null",
-
           ".write": "auth != null && !data.exists()",
-
           ".validate": "newData.hasChildren(['uid','text','clientMsgId','clientAt','at'])"
             + " && newData.child('uid').val() === auth.uid"
             + " && newData.child('clientMsgId').val() === $msgId"
@@ -49,7 +47,42 @@
     "rooms": {
       "$roomId": {
         ".read": "auth != null && data.child('participants').child(auth.uid).val() === true",
-        ".write": "auth != null && ( (!data.exists() && newData.child('participants').child(auth.uid).val() === true) || (data.child('participants').child(auth.uid).val() === true) )"
+
+        ".write": "auth != null && ( (!data.exists() && newData.child('participants').child(auth.uid).val() === true) || (data.child('participants').child(auth.uid).val() === true) )",
+
+        "participants": {
+          "$uid": {
+            ".read": "auth != null && root.child('rooms').child($roomId).child('participants').child(auth.uid).val() === true",
+            ".write": "auth != null && root.child('rooms').child($roomId).child('participants').child(auth.uid).val() === true",
+            ".validate": "newData.isBoolean() && newData.val() === true"
+          }
+        },
+
+        "typing": {
+          "$uid": {
+            ".read": "auth != null && root.child('rooms').child($roomId).child('participants').child(auth.uid).val() === true",
+            ".write": "auth != null && auth.uid === $uid && root.child('rooms').child($roomId).child('participants').child(auth.uid).val() === true",
+            ".validate": "newData.isBoolean()"
+          }
+        },
+
+        "messagesById": {
+          ".indexOn": ["at"],
+          "$msgId": {
+            ".read": "auth != null && root.child('rooms').child($roomId).child('participants').child(auth.uid).val() === true",
+            ".write": "auth != null && !data.exists() && root.child('rooms').child($roomId).child('participants').child(auth.uid).val() === true",
+            ".validate": "newData.hasChildren(['uid','text','clientMsgId','clientAt','at'])"
+              + " && newData.child('uid').val() === auth.uid"
+              + " && newData.child('clientMsgId').val() === $msgId"
+              + " && newData.child('text').isString()"
+              + " && newData.child('text').val().length >= 1"
+              + " && newData.child('text').val().length <= 500"
+              + " && newData.child('clientAt').isNumber()"
+              + " && newData.child('clientAt').val() > 0"
+              + " && newData.child('clientAt').val() <= now + 600000"
+              + " && newData.child('clientAt').val() >= now - 2592000000"
+          }
+        }
       }
     }
   }
