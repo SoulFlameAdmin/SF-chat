@@ -1,0 +1,6 @@
+E:\Python-E\python.exe" -m http.server 5173 --bind 127.0.0.1
+
+
+
+
+npx http-server -p 5173

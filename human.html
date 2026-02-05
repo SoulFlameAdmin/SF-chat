@@ -1,0 +1,937 @@
+<!doctype html>
+<html lang="bg">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>GLB Character Controller — WASD/Shift/Space</title>
+  <style>
+    html,body{height:100%;margin:0;overflow:hidden;background:#dfe7f2;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial}
+    #c{position:fixed;inset:0;width:100vw;height:100vh;display:block}
+
+    #hud{
+      position:fixed; left:14px; top:14px; z-index:10;
+      background:rgba(255,255,255,.62);
+      border:1px solid rgba(255,255,255,.35);
+      backdrop-filter: blur(12px);
+      border-radius:14px;
+      padding:12px 12px;
+      width:min(460px, calc(100vw - 28px));
+      box-shadow: 0 14px 40px rgba(0,0,0,.16);
+      color:#111;
+      user-select:none;
+    }
+    #hud h1{margin:0 0 6px 0;font-size:14px;letter-spacing:.2px}
+    #hud .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+    #hud button,#hud label{
+      border:0;border-radius:12px;padding:10px 12px;cursor:pointer;
+      font-weight:800;font-size:12px;
+    }
+    #hud button.primary{background:#111;color:#fff}
+    #hud button.secondary,#hud label.secondary{
+      background:rgba(0,0,0,.08);color:#111;border:1px solid rgba(0,0,0,.08)
+    }
+    #file{display:none}
+    #status{margin-top:8px;font-size:12px;opacity:.92;line-height:1.35}
+    #controls{margin-top:8px;font-size:12px;opacity:.92;line-height:1.35}
+    #animBox{
+      margin-top:10px;
+      background:rgba(255,255,255,.55);
+      border:1px solid rgba(0,0,0,.06);
+      border-radius:12px;
+      padding:10px;
+      max-height:180px;
+      overflow:auto;
+    }
+    .animTitle{font-size:12px;font-weight:900;margin-bottom:6px}
+    .animList{display:flex;flex-wrap:wrap;gap:8px}
+    .chip{
+      font-size:12px;
+      padding:8px 10px;
+      border-radius:999px;
+      border:1px solid rgba(0,0,0,.08);
+      background:rgba(255,255,255,.75);
+      cursor:pointer;
+      user-select:none;
+      transition:transform .05s ease;
+    }
+    .chip:active{transform:scale(.98)}
+    .chip.active{background:#111;color:#fff;border-color:#111;}
+
+    /* ===== Intro overlay (text + X) ===== */
+    #centerHint{
+      position:fixed; inset:0;
+      z-index:19;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      background:rgba(10,12,16,.62);
+      backdrop-filter: blur(10px);
+      user-select:none;
+      padding:14px;
+    }
+    #centerHint .card{
+      width:min(720px, calc(100vw - 28px));
+      background:rgba(255,255,255,.88);
+      border:1px solid rgba(255,255,255,.35);
+      border-radius:18px;
+      padding:16px 16px 14px;
+      box-shadow:0 24px 80px rgba(0,0,0,.35);
+      color:#111;
+    }
+    #centerHint .head{
+      display:flex;
+      align-items:flex-start;
+      justify-content:space-between;
+      gap:12px;
+      margin-bottom:10px;
+    }
+    #centerHint .title{
+      font-weight:950;
+      font-size:18px;
+      letter-spacing:.2px;
+      margin:0;
+    }
+    #centerHint .sub{
+      margin-top:6px;
+      font-size:12px;
+      opacity:.9;
+      line-height:1.35;
+    }
+    #centerHint .close{
+      width:40px;height:40px;
+      border-radius:14px;
+      border:1px solid rgba(0,0,0,.08);
+      background:rgba(0,0,0,.06);
+      cursor:pointer;
+      font-weight:950;
+      font-size:18px;
+      line-height:1;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+    }
+    #centerHint .grid{
+      display:grid;
+      grid-template-columns: 1fr 1fr;
+      gap:10px;
+      margin-top:10px;
+    }
+    #centerHint .box{
+      background:rgba(255,255,255,.72);
+      border:1px solid rgba(0,0,0,.06);
+      border-radius:14px;
+      padding:12px;
+    }
+    #centerHint b{font-weight:950}
+    #centerHint .tiny{margin-top:10px;font-size:12px;opacity:.9;line-height:1.35}
+    #centerHint.hide{display:none}
+    @media (max-width: 680px){
+      #centerHint .grid{grid-template-columns: 1fr;}
+    }
+
+    #drop{
+      position:fixed; inset:0; z-index:18;
+      display:none; align-items:center; justify-content:center;
+      background:rgba(0,0,0,.35);
+      color:#fff; font-weight:900; font-size:16px;
+      text-shadow:0 2px 10px rgba(0,0,0,.5);
+      user-select:none;
+    }
+    #drop .box{
+      padding:18px 16px; border-radius:16px;
+      background:rgba(255,255,255,.12);
+      border:1px solid rgba(255,255,255,.25);
+      backdrop-filter: blur(10px);
+    }
+  </style>
+
+  <!-- Three.js (jsDelivr) -->
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.161.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.161.0/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+
+<body>
+  <canvas id="c"></canvas>
+
+  <div id="hud">
+    <h1>Character Controller (ъпгрейд)</h1>
+    <div class="row">
+      <button class="primary" id="btnReload">Reload model</button>
+      <button class="secondary" id="btnReset">Reset</button>
+      <label class="secondary" for="file">Choose .glb</label>
+      <input id="file" type="file" accept=".glb,.gltf"/>
+    </div>
+
+    <div id="status">Booting…</div>
+
+    <div id="controls">
+      <b>WASD</b> движение • <b>Shift</b> run • <b>Space</b> jump • <b>Double Space</b> big jump<br/>
+      <b>Ctrl</b> клякане • <b>Ctrl+WASD</b> търкаляне • Mouse drag = камера • Scroll = zoom • <b>R</b> reset
+    </div>
+
+    <div id="animBox">
+      <div class="animTitle">Animations (click / 1..9)</div>
+      <div class="animList" id="animList"></div>
+      <div style="margin-top:8px;font-size:12px;opacity:.88;line-height:1.35">
+        Ако искаш “walk/run/jump/crouch/roll” — трябва да ги има като клипове в модела.
+        Ако няма jump/roll — правя физически big hop / dash roll (пак работи).
+      </div>
+    </div>
+  </div>
+
+  <!-- Intro Overlay -->
+  <div id="centerHint">
+    <div class="card">
+      <div class="head">
+        <div>
+          <div class="title">Контроли</div>
+          <div class="sub">Затвори с ✕ (или Enter / Esc) и почваш. Камерата е зад героя (“в гръб”).</div>
+        </div>
+        <button class="close" id="btnStart" title="Start">✕</button>
+      </div>
+
+      <div class="grid">
+        <div class="box">
+          <b>WASD</b> движение<br/>
+          <b>Shift + WASD</b> run<br/>
+          <b>Space</b> jump<br/>
+          <b>Double Space</b> big jump
+        </div>
+        <div class="box">
+          <b>Ctrl</b> клякане<br/>
+          <b>Ctrl + WASD</b> търкаляне (roll/dodge)<br/>
+          <b>Mouse drag</b> въртиш камера<br/>
+          <b>Scroll</b> zoom (има повече unzoom)
+        </div>
+      </div>
+
+      <div class="tiny">
+        Локално стартиране (E:\OMEGLE): <b>cd /d E:\OMEGLE</b> → <b>py -m http.server 5173</b><br/>
+        После: <b>http://localhost:5173/index.html</b>
+      </div>
+    </div>
+  </div>
+
+  <div id="drop"><div class="box">Drop your .glb here</div></div>
+
+  <script type="module">
+    import * as THREE from "three";
+    import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+    import { DRACOLoader } from "three/addons/loaders/DRACOLoader.js";
+
+    // === CONFIG ===
+    const MODEL_URL = "./business_man_-_low_polygon_game_character.glb";
+
+    // Camera range (MORE UNZOOM)
+    const CAM_MIN = 2.6;
+    const CAM_MAX = 26.0;
+
+    // Double-space window (ms)
+    const DOUBLE_SPACE_MS = 220;
+
+    const canvas = document.getElementById("c");
+    const statusEl = document.getElementById("status");
+    const animListEl = document.getElementById("animList");
+    const fileInput = document.getElementById("file");
+    const btnReload = document.getElementById("btnReload");
+    const btnReset = document.getElementById("btnReset");
+    const centerHint = document.getElementById("centerHint");
+    const dropEl = document.getElementById("drop");
+    const btnStart = document.getElementById("btnStart");
+
+    let gameEnabled = false;
+
+    function startGame(){
+      gameEnabled = true;
+      centerHint.classList.add("hide");
+    }
+    btnStart.addEventListener("click", startGame);
+
+    // --- Renderer / Scene ---
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+    const scene = new THREE.Scene();
+    scene.fog = new THREE.FogExp2(0xdbe4ef, 0.015);
+
+    const camera = new THREE.PerspectiveCamera(55, innerWidth/innerHeight, 0.05, 250);
+
+    // Lights
+    scene.add(new THREE.HemisphereLight(0xe8f1ff, 0xa9b7c6, 0.85));
+    const sun = new THREE.DirectionalLight(0xffffff, 1.2);
+    sun.position.set(6, 10, 4);
+    sun.castShadow = true;
+    sun.shadow.mapSize.set(2048, 2048);
+    sun.shadow.camera.near = 0.5;
+    sun.shadow.camera.far = 40;
+    sun.shadow.camera.left = -12;
+    sun.shadow.camera.right = 12;
+    sun.shadow.camera.top = 12;
+    sun.shadow.camera.bottom = -12;
+    sun.shadow.bias = -0.00015;
+    scene.add(sun);
+
+    // Snow ground (procedural)
+    function makeSnowTex() {
+      const s = 256;
+      const cnv = document.createElement("canvas");
+      cnv.width = cnv.height = s;
+      const ctx = cnv.getContext("2d");
+      const img = ctx.createImageData(s, s);
+      for (let i=0;i<img.data.length;i+=4){
+        const n = 210 + Math.random()*35;
+        const b = n + Math.random()*8;
+        img.data[i]=n; img.data[i+1]=n; img.data[i+2]=b; img.data[i+3]=255;
+      }
+      ctx.putImageData(img,0,0);
+      ctx.globalAlpha = 0.12;
+      ctx.fillStyle = "#8aa0b8";
+      for (let k=0;k<26;k++){
+        const y = Math.random()*s;
+        ctx.fillRect(0,y,s,1+Math.random()*2);
+      }
+      const tex = new THREE.CanvasTexture(cnv);
+      tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+      tex.repeat.set(18,18);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      return tex;
+    }
+    const ground = new THREE.Mesh(
+      new THREE.PlaneGeometry(220, 220),
+      new THREE.MeshStandardMaterial({ map: makeSnowTex(), roughness: 0.95, metalness: 0 })
+    );
+    ground.rotation.x = -Math.PI/2;
+    ground.receiveShadow = true;
+    scene.add(ground);
+
+    // Mountains silhouettes
+    (function addMountains(){
+      const geo = new THREE.ConeGeometry(1, 1, 4);
+      const mat = new THREE.MeshStandardMaterial({ color: 0xc7d2e0, roughness: 1, metalness: 0 });
+      for (let i=0;i<16;i++){
+        const m = new THREE.Mesh(geo, mat);
+        const r = 35 + Math.random()*55;
+        const a = Math.random()*Math.PI*2;
+        m.position.set(Math.cos(a)*r, 0.5 + Math.random()*2.0, Math.sin(a)*r);
+        m.scale.set(6 + Math.random()*10, 6 + Math.random()*18, 6 + Math.random()*10);
+        m.rotation.y = Math.random()*Math.PI;
+        scene.add(m);
+      }
+    })();
+
+    // Snow particles
+    const snowCount = 2600;
+    const snowGeo = new THREE.BufferGeometry();
+    const snowPos = new Float32Array(snowCount*3);
+    const snowVel = new Float32Array(snowCount);
+    function resetSnow(i){
+      const idx=i*3;
+      snowPos[idx]=(Math.random()-0.5)*80;
+      snowPos[idx+1]=4+Math.random()*22;
+      snowPos[idx+2]=(Math.random()-0.5)*80;
+      snowVel[i]=0.7+Math.random()*1.6;
+    }
+    for(let i=0;i<snowCount;i++) resetSnow(i);
+    snowGeo.setAttribute("position", new THREE.BufferAttribute(snowPos,3));
+    const snow = new THREE.Points(
+      snowGeo,
+      new THREE.PointsMaterial({ color: 0xffffff, size: 0.03, transparent:true, opacity:0.8, depthWrite:false })
+    );
+    scene.add(snow);
+
+    // --- Player / Model / Animations ---
+    const player = new THREE.Group();
+    scene.add(player);
+
+    let mixer = null;
+    let modelRoot = null;
+
+    let clips = [];
+    let clipActions = [];
+    let activeIndex = -1;
+
+    // locomotion mapping
+    let idxIdle = -1, idxWalk = -1, idxRun = -1, idxJump = -1, idxCrouch = -1, idxRoll = -1;
+
+    function findByName(regex){
+      const i = clips.findIndex(c => regex.test(c.name.toLowerCase()));
+      return i;
+    }
+
+    function detectLocomotion(){
+      idxIdle = findByName(/idle|stand|breath/);
+      idxWalk = findByName(/walk|move/);
+      idxRun  = findByName(/run|jog|sprint/);
+      idxJump = findByName(/jump|hop|leap/);
+      idxCrouch = findByName(/crouch|duck|kneel|squat/);
+      idxRoll = findByName(/roll|dodge|slide|tumble/);
+
+      // fallbacks
+      if (idxIdle < 0 && clips.length) idxIdle = 0;
+      if (idxWalk < 0 && clips.length) idxWalk = Math.min(1, clips.length-1);
+    }
+
+    let modeLabel = "Boot";
+    function updateStatus(){
+      const animName = (activeIndex >= 0) ? (clips[activeIndex]?.name ?? "?") : "-";
+      statusEl.textContent = `Loaded ✓ | ${modeLabel} | Anim: ${animName}`;
+    }
+    function setMode(m){
+      modeLabel = m;
+      updateStatus();
+    }
+
+    function setActive(i, {once=false, fade=0.18} = {}){
+      if (!clipActions[i]) return;
+
+      const next = clipActions[i];
+      if (activeIndex === i && !once) return;
+
+      if (once) {
+        next.setLoop(THREE.LoopOnce, 1);
+        next.clampWhenFinished = true;
+      } else {
+        next.setLoop(THREE.LoopRepeat, Infinity);
+        next.clampWhenFinished = false;
+      }
+
+      next.reset().play();
+
+      if (activeIndex >= 0 && clipActions[activeIndex]) {
+        clipActions[activeIndex].crossFadeTo(next, fade, false);
+      }
+      activeIndex = i;
+
+      [...animListEl.querySelectorAll(".chip")].forEach((el, idx) => {
+        el.classList.toggle("active", idx === activeIndex);
+      });
+
+      updateStatus();
+    }
+
+    function rebuildAnimUI(){
+      animListEl.innerHTML = "";
+      clips.forEach((c, i) => {
+        const chip = document.createElement("div");
+        const key = (i < 9) ? ` [${i+1}]` : "";
+        chip.className = "chip";
+        chip.textContent = c.name + key;
+        chip.addEventListener("click", () => { setMode("Manual"); setActive(i); });
+        animListEl.appendChild(chip);
+      });
+      if (activeIndex >= 0) {
+        [...animListEl.querySelectorAll(".chip")][activeIndex]?.classList.add("active");
+      }
+    }
+
+    function cleanupModel(){
+      if (mixer) mixer.stopAllAction();
+      mixer = null;
+      clipActions = [];
+      clips = [];
+      activeIndex = -1;
+      idxIdle = idxWalk = idxRun = idxJump = idxCrouch = idxRoll = -1;
+
+      if (modelRoot) {
+        player.remove(modelRoot);
+        modelRoot.traverse(o => {
+          if (o.geometry) o.geometry.dispose?.();
+          if (o.material) {
+            const mats = Array.isArray(o.material) ? o.material : [o.material];
+            mats.forEach(m => {
+              m.map?.dispose?.();
+              m.normalMap?.dispose?.();
+              m.roughnessMap?.dispose?.();
+              m.metalnessMap?.dispose?.();
+              m.dispose?.();
+            });
+          }
+        });
+      }
+      modelRoot = null;
+      animListEl.innerHTML = "";
+    }
+
+    // Camera orbit (behind player default)
+    let camTheta = Math.PI;          // behind the player
+    let camPhi   = Math.PI * 0.36;
+    let camDist  = 9.2;              // start farther
+    let baseCamDist = camDist;
+
+    function setupModel(gltf){
+      cleanupModel();
+
+      modelRoot = gltf.scene;
+      modelRoot.traverse(o => {
+        if (o.isMesh){
+          o.castShadow = true;
+          o.receiveShadow = true;
+        }
+      });
+
+      // Scale to ~1.75m
+      const box = new THREE.Box3().setFromObject(modelRoot);
+      const size = new THREE.Vector3();
+      box.getSize(size);
+      const height = size.y || 1;
+      const scale = 1.75 / height;
+      modelRoot.scale.setScalar(scale);
+
+      // Center and place on ground
+      const box2 = new THREE.Box3().setFromObject(modelRoot);
+      const center = new THREE.Vector3();
+      box2.getCenter(center);
+      modelRoot.position.sub(center);
+      const size2 = new THREE.Vector3();
+      box2.getSize(size2);
+      modelRoot.position.y += size2.y * 0.5;
+
+      player.add(modelRoot);
+
+      // Animations
+      clips = gltf.animations || [];
+      mixer = new THREE.AnimationMixer(modelRoot);
+      clipActions = clips.map(c => mixer.clipAction(c));
+
+      detectLocomotion();
+      rebuildAnimUI();
+
+      // Start idle
+      if (idxIdle >= 0) { setMode("Idle"); setActive(idxIdle); }
+      else if (clips.length) { setMode("Idle"); setActive(0); }
+
+      // Auto camera distance based on model size (more unzoom)
+      const modelSize = size2.length();
+      baseCamDist = THREE.MathUtils.clamp(7.5 + modelSize * 0.95, 9.0, 15.5);
+      camDist = THREE.MathUtils.clamp(baseCamDist, CAM_MIN, CAM_MAX);
+
+      // Keep camera behind
+      camTheta = Math.PI;
+
+      console.log("Animations:", clips.map(c => c.name));
+      updateStatus();
+    }
+
+    // --- Loader ---
+    const loader = new GLTFLoader();
+    const draco = new DRACOLoader();
+    draco.setDecoderPath("https://cdn.jsdelivr.net/npm/three@0.161.0/examples/jsm/libs/draco/");
+    loader.setDRACOLoader(draco);
+
+    function loadGLB(url){
+      statusEl.textContent = "Loading model…";
+      return new Promise((resolve, reject) => {
+        loader.load(
+          url,
+          gltf => resolve(gltf),
+          xhr => {
+            if (xhr.total) {
+              const p = Math.round((xhr.loaded/xhr.total)*100);
+              statusEl.textContent = `Loading model… ${p}%`;
+            } else {
+              statusEl.textContent = "Loading model…";
+            }
+          },
+          err => reject(err)
+        );
+      });
+    }
+
+    async function bootDefault(){
+      try{
+        const gltf = await loadGLB(MODEL_URL);
+        setupModel(gltf);
+      }catch(e){
+        statusEl.textContent = "Не мога да auto-load-на модела (ако си на file://). Натисни Choose .glb или пусни server.";
+        console.warn(e);
+        centerHint.classList.remove("hide");
+      }
+    }
+
+    btnReload.addEventListener("click", bootDefault);
+
+    fileInput.addEventListener("change", async (ev) => {
+      const file = ev.target.files?.[0];
+      if(!file) return;
+      const url = URL.createObjectURL(file);
+      try{
+        const gltf = await loadGLB(url);
+        setupModel(gltf);
+      }catch(e){
+        statusEl.textContent = "Failed to load this GLB.";
+        console.error(e);
+      }finally{
+        URL.revokeObjectURL(url);
+      }
+    });
+
+    // Drag & drop
+    window.addEventListener("dragenter", (e)=>{e.preventDefault(); dropEl.style.display="flex";});
+    window.addEventListener("dragover",  (e)=>{e.preventDefault(); dropEl.style.display="flex";});
+    window.addEventListener("dragleave", (e)=>{e.preventDefault(); dropEl.style.display="none";});
+    window.addEventListener("drop", async (e)=>{
+      e.preventDefault();
+      dropEl.style.display="none";
+      const file = [...(e.dataTransfer?.files||[])].find(f=>/\.(glb|gltf)$/i.test(f.name));
+      if(!file) return;
+      const url = URL.createObjectURL(file);
+      try{
+        const gltf = await loadGLB(url);
+        setupModel(gltf);
+      }catch(err){
+        statusEl.textContent = "Failed to load dropped file.";
+        console.error(err);
+      }finally{
+        URL.revokeObjectURL(url);
+      }
+    });
+
+    // --- Controls (WASD + Shift + Space Jump + Ctrl Crouch/Roll) ---
+    const input = { w:false,a:false,s:false,d:false,shift:false,ctrl:false };
+    const tmpDir = new THREE.Vector3();
+    const forward = new THREE.Vector3();
+    const right = new THREE.Vector3();
+    const up = new THREE.Vector3(0,1,0);
+
+    // Jump (double-space big)
+    let hopping = false;
+    let hopT = 0;
+    let hopDuration = 0.45;
+    let hopHeight = 0.55;
+    let baseY = 0;
+
+    // Double-space detector (delay normal a tiny bit)
+    let spaceArmed = false;
+    let spaceTimer = null;
+
+    // Roll (Ctrl + WASD)
+    let rolling = false;
+    let rollT = 0;
+    const rollDurationTotal = 0.52;
+    const rollSpeed = 8.8;
+    const rollDir = new THREE.Vector3();
+    let lastRollAt = -999999;
+    const ROLL_COOLDOWN_MS = 320;
+
+    function isMoving(){
+      return input.w||input.a||input.s||input.d;
+    }
+
+    function armJump(){
+      if (!modelRoot) return;
+      if (hopping || rolling) return;
+
+      if (!spaceArmed){
+        spaceArmed = true;
+        spaceTimer = setTimeout(()=>{
+          spaceArmed = false;
+          doJump("normal");
+        }, DOUBLE_SPACE_MS);
+      } else {
+        clearTimeout(spaceTimer);
+        spaceArmed = false;
+        doJump("big");
+      }
+    }
+
+    function doJump(kind="normal"){
+      if (!modelRoot) return;
+      if (hopping || rolling) return;
+
+      const big = (kind === "big");
+      hopDuration = big ? 0.62 : 0.45;
+      hopHeight   = big ? 1.05 : 0.55;
+
+      hopping = true;
+      hopT = 0;
+      baseY = player.position.y;
+
+      if (idxJump >= 0) {
+        setMode(big ? "Big Jump" : "Jump");
+        setActive(idxJump, { once:true, fade:0.10 });
+      } else {
+        setMode(big ? "Big Jump" : "Jump");
+      }
+    }
+
+    function tryStartRoll(moveVec){
+      const now = performance.now();
+      if (rolling) return false;
+      if (now - lastRollAt < ROLL_COOLDOWN_MS) return false;
+
+      rolling = true;
+      rollT = 0;
+      rollDir.copy(moveVec);
+      lastRollAt = now;
+
+      if (idxRoll >= 0) {
+        setMode("Roll");
+        setActive(idxRoll, { once:true, fade:0.08 });
+      } else {
+        setMode("Roll");
+        // fallback: keep current anim or idle
+      }
+      return true;
+    }
+
+    window.addEventListener("keydown", (e) => {
+      if (e.repeat) return;
+
+      // Start overlay: Enter/Esc closes
+      if (!gameEnabled){
+        if (e.code === "Enter" || e.code === "Escape") startGame();
+        return;
+      }
+
+      if (e.code === "KeyW") input.w = true;
+      if (e.code === "KeyA") input.a = true;
+      if (e.code === "KeyS") input.s = true;
+      if (e.code === "KeyD") input.d = true;
+      if (e.code === "ShiftLeft" || e.code === "ShiftRight") input.shift = true;
+      if (e.code === "ControlLeft" || e.code === "ControlRight") input.ctrl = true;
+
+      if (e.code === "Space") armJump();
+      if (e.code === "KeyR") resetAll();
+
+      // Play animation by 1..9
+      if (e.code.startsWith("Digit")) {
+        const n = Number(e.code.replace("Digit",""));
+        if (n>=1 && n<=9) {
+          const idx = n-1;
+          if (idx < clips.length) { setMode("Manual"); setActive(idx); }
+        }
+      }
+
+      // Cycle animations
+      if (e.code === "KeyQ") cycle(-1);
+      if (e.code === "KeyE") cycle(+1);
+    });
+
+    window.addEventListener("keyup", (e) => {
+      if (!gameEnabled) return;
+
+      if (e.code === "KeyW") input.w = false;
+      if (e.code === "KeyA") input.a = false;
+      if (e.code === "KeyS") input.s = false;
+      if (e.code === "KeyD") input.d = false;
+      if (e.code === "ShiftLeft" || e.code === "ShiftRight") input.shift = false;
+      if (e.code === "ControlLeft" || e.code === "ControlRight") input.ctrl = false;
+    });
+
+    function cycle(dir){
+      if (!clips.length) return;
+      const next = (activeIndex < 0) ? 0 : (activeIndex + dir + clips.length) % clips.length;
+      setMode("Manual");
+      setActive(next);
+    }
+
+    // --- Camera orbit (drag + wheel) ---
+    let dragging = false;
+    let lastX=0,lastY=0;
+
+    window.addEventListener("contextmenu", e => e.preventDefault());
+
+    window.addEventListener("pointerdown", (e)=>{
+      if (!gameEnabled) return;
+      if (e.button !== 0 && e.button !== 2) return;
+      dragging = true;
+      lastX=e.clientX; lastY=e.clientY;
+    });
+    window.addEventListener("pointerup", ()=> dragging=false);
+    window.addEventListener("pointermove", (e)=>{
+      if(!gameEnabled) return;
+      if(!dragging) return;
+      const dx=e.clientX-lastX, dy=e.clientY-lastY;
+      lastX=e.clientX; lastY=e.clientY;
+      camTheta -= dx*0.0042;
+      camPhi   -= dy*0.0032;
+      camPhi = Math.max(0.18, Math.min(1.25, camPhi));
+    });
+    window.addEventListener("wheel", (e)=>{
+      if (!gameEnabled) return;
+      camDist += e.deltaY*0.0055;          // stronger zoom
+      camDist = Math.max(CAM_MIN, Math.min(CAM_MAX, camDist));
+    }, {passive:true});
+
+    function resetAll(){
+      player.position.set(0,0,0);
+      player.rotation.set(0,0,0);
+
+      camTheta = Math.PI;                  // behind player
+      camPhi   = Math.PI * 0.36;
+      camDist  = Math.max(CAM_MIN, Math.min(CAM_MAX, baseCamDist));
+
+      hopping = false;
+      rolling = false;
+      rollT = 0;
+
+      spaceArmed = false;
+      clearTimeout(spaceTimer);
+
+      if (idxIdle>=0) { setMode("Idle"); setActive(idxIdle); }
+      else setMode("Idle");
+    }
+    btnReset.addEventListener("click", resetAll);
+
+    // --- Update loop ---
+    const clock = new THREE.Clock();
+
+    function updateSnow(dt){
+      const pos = snowGeo.attributes.position.array;
+      for(let i=0;i<snowCount;i++){
+        const idx=i*3;
+        pos[idx+1]-=snowVel[i]*dt;
+        pos[idx]+=Math.sin((i*19.19)+performance.now()*0.001)*0.002;
+        pos[idx+2]+=Math.cos((i*9.37)+performance.now()*0.001)*0.002;
+        if(pos[idx+1]<0.05) resetSnow(i);
+      }
+      snowGeo.attributes.position.needsUpdate = true;
+    }
+
+    function updateHop(dt){
+      if(!hopping) return;
+      hopT += dt;
+      const t = Math.min(1, hopT / hopDuration);
+      const y = 4*t*(1-t);
+      player.position.y = baseY + y * hopHeight;
+      if (t >= 1) {
+        hopping = false;
+        player.position.y = baseY;
+      }
+    }
+
+    function updateRoll(dt){
+      if(!rolling) return;
+      rollT += dt;
+      const t = Math.min(1, rollT / rollDurationTotal);
+
+      // little ease-out
+      const k = 1.0 - (t*t*0.55);
+      player.position.addScaledVector(rollDir, rollSpeed * k * dt);
+
+      player.rotation.y = Math.atan2(rollDir.x, rollDir.z);
+
+      if (t >= 1){
+        rolling = false;
+      }
+    }
+
+    function updatePlayer(dt){
+      if(!modelRoot) return;
+
+      // Rolling has priority
+      if (rolling){
+        updateRoll(dt);
+        return;
+      }
+
+      const moving = isMoving();
+
+      // Compute desired move dir (relative to camera)
+      let moveVec = null;
+      if (moving){
+        tmpDir.set(0,0,0);
+        if(input.w) tmpDir.z -= 1;
+        if(input.s) tmpDir.z += 1;
+        if(input.a) tmpDir.x -= 1;
+        if(input.d) tmpDir.x += 1;
+        tmpDir.normalize();
+
+        // IMPORTANT: forward is camera->target (fix "в гръб" + W=напред)
+        forward.set(-Math.sin(camTheta), 0, -Math.cos(camTheta)).normalize();
+        right.crossVectors(forward, up).normalize();
+
+        moveVec = new THREE.Vector3()
+          .addScaledVector(forward, -tmpDir.z)
+          .addScaledVector(right, tmpDir.x)
+          .normalize();
+      }
+
+      // Ctrl logic: crouch / roll
+      if (input.ctrl){
+        if (moving && moveVec){
+          // Ctrl + WASD => roll (repeat with cooldown)
+          if (tryStartRoll(moveVec)) return;
+          // during cooldown just crouch/hold
+        } else {
+          // Ctrl alone => crouch
+          if (!hopping){
+            if (idxCrouch >= 0) { setMode("Crouch"); setActive(idxCrouch); }
+            else setMode("Crouch");
+          }
+          return;
+        }
+      }
+
+      // Not moving => Idle
+      if(!moving){
+        if (!hopping && idxIdle>=0 && activeIndex!==idxIdle){
+          setMode("Idle");
+          setActive(idxIdle);
+        }
+        return;
+      }
+
+      // Normal movement
+      const speed = input.shift ? 3.8 : 2.3;
+      player.position.addScaledVector(moveVec, speed * dt);
+
+      // face dir
+      const yaw = Math.atan2(moveVec.x, moveVec.z);
+      player.rotation.y = yaw;
+
+      // locomotion animations (don’t override jump clip mid-air)
+      if (!hopping && !(idxJump>=0 && activeIndex===idxJump)) {
+        if (input.shift && idxRun>=0) { setMode("Run"); setActive(idxRun); }
+        else if (idxWalk>=0) { setMode("Walk"); setActive(idxWalk); }
+      }
+    }
+
+    function updateCamera(){
+      // Lower camera when crouching
+      const yTarget = input.ctrl ? 1.05 : 1.35;
+      const target = player.position.clone().add(new THREE.Vector3(0, yTarget, 0));
+
+      const spherical = new THREE.Spherical(camDist, camPhi, camTheta);
+      const offset = new THREE.Vector3().setFromSpherical(spherical);
+      camera.position.copy(target).add(offset);
+      camera.lookAt(target);
+    }
+
+    function tick(){
+      const dt = Math.min(clock.getDelta(), 0.033);
+
+      updateSnow(dt);
+      updateHop(dt);
+      updatePlayer(dt);
+
+      if(mixer) mixer.update(dt);
+      updateCamera();
+
+      renderer.render(scene, camera);
+      requestAnimationFrame(tick);
+    }
+
+    addEventListener("resize", ()=>{
+      renderer.setSize(innerWidth, innerHeight);
+      camera.aspect = innerWidth/innerHeight;
+      camera.updateProjectionMatrix();
+    });
+
+    // Boot
+    statusEl.textContent = "Engine ready. Loading default model…";
+    bootDefault();
+    tick();
+  </script>
+</body>
+</html>
