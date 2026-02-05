@@ -27,15 +27,15 @@
       <div class="messages-content" id="messages"></div>
     </div>
 
-    <div class="message-box">
+    <!-- ✅ Единствен send pipeline (form) -->
+    <form class="message-box" id="chatForm" autocomplete="off">
       <textarea class="message-input" id="messageInput" placeholder="Type message…" disabled></textarea>
-      <button type="button" class="message-submit" id="sendBtn" disabled>Send</button>
-    </div>
+      <button class="message-submit" id="sendBtn" type="submit" disabled>Send</button>
+    </form>
   </div>
 
   <div class="bg" aria-hidden="true"></div>
 
-<script type="module" src="./app_public.js"></script>
-
+  <script type="module" src="./app_public.js"></script>
 </body>
 </html>

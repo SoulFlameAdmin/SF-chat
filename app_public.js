@@ -1,4 +1,4 @@
-// E:\OMEGLE\app_rooms.js (STRANGERS + ROOMS, NO DOUBLE SEND)
+// E:\OMEGLE\app_public.js (STRANGERS + ROOMS, NO DOUBLE SEND)
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
 import {
   getDatabase, ref, set, update, remove, push,
@@ -36,6 +36,28 @@ if (window.__SF_ROOMS_BOOTED__) {
   const AVATAR =
     "https://s3-us-west-2.amazonaws.com/s.cdpn.io/156381/profile/profile-80.jpg";
 
+  // --- constants / helpers ---
+  const SEND_BUCKET_MS = 1500; // 1.5s bucket за детерминистичен msgId (убива двойно send)
+
+  function hash32(str) {
+    // FNV-1a 32-bit
+    let h = 0x811c9dc5;
+    for (let i = 0; i < str.length; i++) {
+      h ^= str.charCodeAt(i);
+      h = Math.imul(h, 0x01000193);
+    }
+    return (h >>> 0);
+  }
+
+  // правим msgId детерминистичен, за да няма 2 записа при 1 действие
+  function makeDeterministicMsgId({ uid, text, now }) {
+    const bucket = Math.floor(now / SEND_BUCKET_MS);
+    const uid8 = (uid || "").slice(0, 8);
+    const h = hash32(text || "");
+    // безопасни символи за RTDB keys: [a-zA-Z0-9_]
+    return `${uid8}_${bucket.toString(36)}_${h.toString(36)}`;
+  }
+
   let uid = null;
 
   // current session state
@@ -47,12 +69,14 @@ if (window.__SF_ROOMS_BOOTED__) {
   let unsubMessages = null;
   let messagesQ = null;
   let messagesHandler = null;
-
   let unsubMatch = null;
 
   let seenMsgKeys = new Set();
 
-  // hard anti double-send
+  // UI dedupe (ако има вече стари дубли в DB)
+  let recentRender = new Map(); // sig -> lastSeenMs
+
+  // hard anti double-send (локална защита)
   let sending = false;
   let lastSendAt = 0;
   let lastSendSig = "";
@@ -64,8 +88,6 @@ if (window.__SF_ROOMS_BOOTED__) {
   // refs
   const waitingRef = () => ref(db, "waiting/slot");
   const matchRef = () => ref(db, `matches/${uid}`);
-  const roomRef = (roomId) => ref(db, `rooms/${roomId}`);
-  const participantsRef = (roomId) => ref(db, `rooms/${roomId}/participants`);
   const typingRef = (roomId, who) => ref(db, `rooms/${roomId}/typing/${who}`);
   const messagesRootRef = (roomId) => ref(db, `rooms/${roomId}/messagesById`);
   const msgRef = (roomId, msgId) => ref(db, `rooms/${roomId}/messagesById/${msgId}`);
@@ -106,6 +128,7 @@ if (window.__SF_ROOMS_BOOTED__) {
   function clearChat() {
     messagesEl.innerHTML = "";
     seenMsgKeys = new Set();
+    recentRender = new Map();
   }
 
   function detachRoomListeners() {
@@ -117,6 +140,7 @@ if (window.__SF_ROOMS_BOOTED__) {
     messagesHandler = null;
 
     seenMsgKeys = new Set();
+    recentRender = new Map();
   }
 
   function detachMatchListener() {
@@ -176,6 +200,22 @@ if (window.__SF_ROOMS_BOOTED__) {
 
       const m = snap.val();
       if (!m || !m.text) return;
+
+      // UI-dedupe: ако има 2 записа със същия текст (по-стари дубли)
+      const bucket = Math.floor(((m.clientAt || 0) || 0) / SEND_BUCKET_MS);
+      const sig = `${m.uid || ""}::${m.text}::${bucket}`;
+      const now = Date.now();
+      const last = recentRender.get(sig);
+      if (last && (now - last) < 3500) return; // скрий близък дубъл
+      recentRender.set(sig, now);
+
+      // prune
+      if (recentRender.size > 600) {
+        for (const [s, t] of recentRender) {
+          if (now - t > 6000) recentRender.delete(s);
+        }
+      }
+
       addMessage(m.text, { personal: m.uid === uid });
     };
 
@@ -194,7 +234,7 @@ if (window.__SF_ROOMS_BOOTED__) {
     detachRoomListeners();
     detachMatchListener();
 
-    // typing off + cleanup match node (optional)
+    // typing off + cleanup match node
     if (currentRoomId) {
       try { await remove(typingRef(currentRoomId, uid)); } catch {}
     }
@@ -211,11 +251,8 @@ if (window.__SF_ROOMS_BOOTED__) {
     clearChat();
     setStatus("Ready");
 
-    // Ако искаш да чистиш waiting слот, може, но не е задължително.
-    // Пазя го "меко", за да не прави допълнителни проблеми.
     if (resetWaiting) {
-      // ако ти си бил в waiting/slot, може да го чистиш
-      // (но без cloud function няма перфектна гаранция)
+      // optional (оставено меко)
     }
   }
 
@@ -226,23 +263,21 @@ if (window.__SF_ROOMS_BOOTED__) {
     btnFind.disabled = true;
     btnNext.disabled = false;
 
-    // ако вече имаш match listener – махни
     detachMatchListener();
 
-    // 1) опит да вземеш slot-а (transaction)
+    // 1) try take slot
     let otherUid = null;
 
     await runTransaction(waitingRef(), (cur) => {
-      if (cur === null) return uid;                 // ти ставаш чакащия
-      if (typeof cur === "string" && cur !== uid) { // намираш друг
+      if (cur === null) return uid;
+      if (typeof cur === "string" && cur !== uid) {
         otherUid = cur;
-        return null; // изчистваме slot-а
+        return null;
       }
-      return cur; // ако е твоето uid или нещо друго — не пипай
+      return cur;
     });
 
     if (otherUid) {
-      // 2) Ти си “матчера” -> създаваш room С participants ОЩЕ СЕГА (иначе rules режат)
       const roomId = push(ref(db, "rooms")).key;
 
       const updates = {};
@@ -250,7 +285,6 @@ if (window.__SF_ROOMS_BOOTED__) {
       updates[`rooms/${roomId}/participants/${otherUid}`] = true;
       updates[`rooms/${roomId}/createdAt`] = serverTimestamp();
 
-      // matches оставяме отворено (както са ти rules) за да можеш да пишеш и за другия
       updates[`matches/${uid}`] = { roomId, peer: otherUid, at: Date.now() };
       updates[`matches/${otherUid}`] = { roomId, peer: uid, at: Date.now() };
 
@@ -260,7 +294,7 @@ if (window.__SF_ROOMS_BOOTED__) {
       return;
     }
 
-    // 3) Ти си чакащия -> чакаш някой да ти запише match
+    // waiting
     setStatus("Searching…");
     unsubMatch = onValue(matchRef(), async (snap) => {
       const v = snap.val();
@@ -281,8 +315,9 @@ if (window.__SF_ROOMS_BOOTED__) {
     const now = Date.now();
     const sig = `${text}::${uid}`;
 
+    // локален анти-спам/анти-double
     if (sending) return;
-    if (sig === lastSendSig && (now - lastSendAt) < 2000) return;
+    if (sig === lastSendSig && (now - lastSendAt) < 200) return;
 
     sending = true;
     lastSendAt = now;
@@ -292,7 +327,8 @@ if (window.__SF_ROOMS_BOOTED__) {
     inputEl.focus();
     sendBtn.disabled = true;
 
-    const clientMsgId = crypto.randomUUID(); // idempotent key
+    // ✅ ключовата част: детерминистичен msgId
+    const clientMsgId = makeDeterministicMsgId({ uid, text, now });
 
     try {
       await set(msgRef(currentRoomId, clientMsgId), {
@@ -315,8 +351,9 @@ if (window.__SF_ROOMS_BOOTED__) {
   btnFind.addEventListener("click", findMatch);
   btnNext.addEventListener("click", () => leaveRoom(true));
 
-  // submit-only pipeline (ако е във form)
+  // ✅ Единен pipeline (form)
   const formEl = inputEl.closest("form");
+
   if (formEl) {
     try { sendBtn.type = "submit"; } catch {}
 
@@ -325,14 +362,16 @@ if (window.__SF_ROOMS_BOOTED__) {
       sendMessage();
     });
 
+    // Enter = send, Shift+Enter = new line
     inputEl.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !e.shiftKey) {
         if (e.repeat) return;
         e.preventDefault();
-        formEl.requestSubmit();
+        sendMessage();
       }
     });
   } else {
+    // fallback ако някой махне form-а
     sendBtn.addEventListener("click", (e) => {
       e.preventDefault();
       sendMessage();
