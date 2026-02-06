@@ -29,7 +29,7 @@ if (window.__SF_ROOMS_BOOTED__) {
   // UI
   const messagesEl = document.getElementById("messages");
   const inputEl = document.getElementById("messageInput");
-  const sendBtn = document.getElementById("sendBtn");
+ // const sendBtn = document.getElementById("sendBtn");
   const btnFind = document.getElementById("btnFind");
   const btnNext = document.getElementById("btnNext");
   const statusEl = document.getElementById("status");
