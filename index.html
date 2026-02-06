@@ -27,6 +27,7 @@
       <div class="messages-content" id="messages"></div>
     </div>
 
+    <!-- ✅ form = единен send pipeline -->
     <form class="message-box" id="chatForm" autocomplete="off">
       <textarea class="message-input" id="messageInput" placeholder="Type message…" disabled></textarea>
       <button type="submit" class="message-submit" id="sendBtn" disabled>Send</button>
@@ -35,7 +36,7 @@
 
   <div class="bg" aria-hidden="true"></div>
 
-  <!-- ✅ cache bust, за да не зарежда стара версия -->
-  <script type="module" src="./app_public.js?v=SFCHAT_NO_DUPES_V3"></script>
+  <!-- ✅ това убива кеша 100% -->
+  <script type="module" src="./app_public.js?v=SFCHAT_NODEDUPES_V5"></script>
 </body>
 </html>

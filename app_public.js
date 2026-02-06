@@ -1,9 +1,4 @@
-// E:\OMEGLE\app_public.js — STRANGERS + ROOMS (NO DUPLICATES FINAL)
-// Fixes:
-// 1) The matcher (first person) DOES NOT write matches/<uid> for himself -> avoids double join.
-// 2) joinRoom is idempotent + locked.
-// 3) msgId is deterministic (bucketed) -> double send becomes 1 write (second gets PERMISSION_DENIED and is ignored).
-// 4) UI dedupe prevents old DB duplicates from rendering twice.
+// E:\OMEGLE\app_public.js — STRANGERS + ROOMS (NO DUPLICATES v5)
 
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
 import {
@@ -11,21 +6,52 @@ import {
   onChildAdded, onValue, off, runTransaction,
   query, orderByChild, limitToLast, serverTimestamp
 } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-database.js";
-import {
-  getAuth, signInAnonymously, onAuthStateChanged
-} from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
+import { getAuth, signInAnonymously, onAuthStateChanged }
+  from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
 
 import { firebaseConfig } from "./firebase-config.js";
 
-const BUILD = "SFCHAT_NO_DUPES_FINAL_v2";
+const BUILD = "SFCHAT_NODEDUPES_V5";
 
-// ✅ Anti double-init (ако по някаква причина се зареди 2 пъти)
-if (window.__SF_ROOMS_BOOTED__) {
-  console.warn("[SFCHAT] already booted:", window.__SF_ROOMS_BUILD__);
+// ✅ anti double init
+if (window.__SFCHAT_BOOTED__) {
+  console.warn("[SFCHAT] already booted:", window.__SFCHAT_BUILD__);
 } else {
-  window.__SF_ROOMS_BOOTED__ = true;
-  window.__SF_ROOMS_BUILD__ = BUILD;
+  window.__SFCHAT_BOOTED__ = true;
+  window.__SFCHAT_BUILD__ = BUILD;
+
   console.log("[SFCHAT] boot:", BUILD);
+
+  // ✅ ВИДИМ BADGE (няма как да не го видиш)
+  const badge = document.createElement("div");
+  badge.id = "sfchat-build-badge";
+  badge.style.cssText = `
+    position:fixed; left:10px; bottom:10px; z-index:999999;
+    background:rgba(0,0,0,.65); color:#fff; font:12px/1.2 system-ui,Segoe UI,Arial;
+    padding:8px 10px; border-radius:10px; backdrop-filter: blur(8px);
+    border:1px solid rgba(255,255,255,.18);
+    max-width: 70vw; pointer-events:none;
+  `;
+  badge.textContent = `BUILD: ${BUILD} (booting…)`;
+  document.body.appendChild(badge);
+
+  // ✅ global dedupe store (оцелява дори при двойно зареждане)
+  const D = (window.__SFCHAT_DEDUPE__ ||= { keys: new Map(), sigs: new Map() });
+
+  function dedupeHit(map, key, ttlMs, max = 6000) {
+    const now = Date.now();
+    const t = map.get(key);
+    if (t && (now - t) < ttlMs) return true;
+    map.set(key, now);
+
+    if (map.size > max) {
+      for (const [k, v] of map) {
+        if (now - v > ttlMs * 2) map.delete(k);
+        if (map.size <= max) break;
+      }
+    }
+    return false;
+  }
 
   const app = initializeApp(firebaseConfig);
   const db = getDatabase(app);
@@ -40,14 +66,16 @@ if (window.__SF_ROOMS_BOOTED__) {
   const statusEl = document.getElementById("status");
   const chatForm = document.getElementById("chatForm");
 
-  if (!messagesEl || !inputEl || !sendBtn || !btnFind || !btnNext || !statusEl || !chatForm) {
-    throw new Error("Missing DOM elements (messages/messageInput/sendBtn/btnFind/btnNext/status/chatForm).");
+  if (!messagesEl || !inputEl || !sendBtn || !btnFind || !btnNext || !statusEl) {
+    throw new Error("Missing DOM elements (messages/messageInput/sendBtn/btnFind/btnNext/status).");
   }
 
   const AVATAR = "https://s3-us-west-2.amazonaws.com/s.cdpn.io/156381/profile/profile-80.jpg";
 
-  // ---------- helpers ----------
-  function setStatus(t) { statusEl.textContent = t; }
+  function setStatus(t) {
+    statusEl.textContent = `${t}`;
+    badge.textContent = `BUILD: ${BUILD} • ${t}`;
+  }
 
   function scrollToBottom() {
     messagesEl.scrollTo({ top: messagesEl.scrollHeight, behavior: "smooth" });
@@ -68,24 +96,18 @@ if (window.__SF_ROOMS_BOOTED__) {
     msg.className = "message new" + (personal ? " message-personal" : "");
     if (!personal && !system) msg.appendChild(makeAvatar());
     msg.appendChild(document.createTextNode(text));
-
     if (system) {
       msg.style.opacity = "0.85";
       msg.style.fontStyle = "italic";
     }
-
     messagesEl.appendChild(msg);
     void msg.offsetWidth;
     scrollToBottom();
   }
 
-  function clearChat() {
-    messagesEl.innerHTML = "";
-    seenMsgKeys = new Set();
-    recentSig = new Map();
-  }
+  function clearChat() { messagesEl.innerHTML = ""; }
 
-  // FNV-1a 32-bit hash
+  // ---- deterministic msgId ----
   function hash32(str) {
     let h = 0x811c9dc5;
     for (let i = 0; i < str.length; i++) {
@@ -95,24 +117,22 @@ if (window.__SF_ROOMS_BOOTED__) {
     return (h >>> 0);
   }
 
-  // ✅ Детеминистичен msgId: ако send се извика 2 пъти до ~2s, става 1 msgId
-  // (rules: !data.exists -> вторият set ще е PERMISSION_DENIED и го игнорираме)
-  const SEND_BUCKET_MS = 2000; // по-широк прозорец -> няма да имаш дубъл при “първия”
+  const SEND_BUCKET_MS = 2000; // 2s bucket -> двойно send става 1 запис
   function makeMsgId(uid, text, now) {
     const bucket = Math.floor(now / SEND_BUCKET_MS).toString(36);
     const u = (uid || "").slice(0, 10);
-    const h = hash32(text || "").toString(36);
+    const h = hash32((text || "").trim()).toString(36);
     return `${u}_${bucket}_${h}`;
   }
 
-  // ---------- state ----------
+  // ---- state ----
   let uid = null;
 
   let joined = false;
   let currentRoomId = null;
   let peerUid = null;
 
-  // waiting state
+  let finding = false;
   let isWaiting = false;
 
   // listeners
@@ -122,12 +142,7 @@ if (window.__SF_ROOMS_BOOTED__) {
 
   let unsubMatch = null;
 
-  let seenMsgKeys = new Set();
-
-  // UI dedupe (ако има стари дубли в DB)
-  let recentSig = new Map();
-
-  // hard anti double-send
+  // send lock
   let sending = false;
   let lastSendAt = 0;
   let lastSendSig = "";
@@ -136,10 +151,7 @@ if (window.__SF_ROOMS_BOOTED__) {
   let joinLock = false;
   let lastJoinedRoomId = null;
 
-  // find lock
-  let finding = false;
-
-  // typing debounce
+  // typing
   let typingTimer = null;
   let typingOn = false;
 
@@ -157,9 +169,6 @@ if (window.__SF_ROOMS_BOOTED__) {
     try { if (messagesQ && messagesHandler) off(messagesQ, "child_added", messagesHandler); } catch {}
     messagesQ = null;
     messagesHandler = null;
-
-    seenMsgKeys = new Set();
-    recentSig = new Map();
   }
 
   function detachMatchListener() {
@@ -170,10 +179,7 @@ if (window.__SF_ROOMS_BOOTED__) {
   async function safeClearWaitingSlotIfMine() {
     if (!uid) return;
     try {
-      await runTransaction(waitingRef(), (cur) => {
-        if (cur === uid) return null;
-        return cur;
-      });
+      await runTransaction(waitingRef(), (cur) => (cur === uid ? null : cur));
     } catch {}
   }
 
@@ -207,12 +213,10 @@ if (window.__SF_ROOMS_BOOTED__) {
       try { await remove(typingRef(currentRoomId, uid)); } catch {}
     }
 
-    // ✅ чистим match нода, за да не re-trigger-ва join при reconnect
     if (uid) {
       try { await remove(matchRef()); } catch {}
     }
 
-    // ✅ ако сме били “чакащи”, чистим waiting/slot ако е наше
     if (resetWaiting && isWaiting) {
       await safeClearWaitingSlotIfMine();
     }
@@ -236,7 +240,7 @@ if (window.__SF_ROOMS_BOOTED__) {
   async function joinRoom(roomId, peer) {
     if (!uid || !roomId) return;
 
-    // ✅ guard: ако join се опита 2 пъти -> ignore
+    // ✅ idempotent join
     if (joinLock) return;
     if (joined && currentRoomId === roomId) return;
     if (lastJoinedRoomId === roomId) return;
@@ -244,70 +248,65 @@ if (window.__SF_ROOMS_BOOTED__) {
     joinLock = true;
     lastJoinedRoomId = roomId;
 
-    // reset
-    await leaveRoom(false);
+    try {
+      await leaveRoom(false);
 
-    currentRoomId = roomId;
-    peerUid = peer;
-    joined = true;
-    isWaiting = false;
-    finding = false;
+      currentRoomId = roomId;
+      peerUid = peer;
+      joined = true;
+      isWaiting = false;
+      finding = false;
 
-    btnFind.disabled = true;
-    btnNext.disabled = false;
-    inputEl.disabled = false;
-    sendBtn.disabled = false;
+      btnFind.disabled = true;
+      btnNext.disabled = false;
+      inputEl.disabled = false;
+      sendBtn.disabled = false;
 
-    clearChat();
-    addMessage("You're now chatting with a stranger. Say hi!", { system: true });
-    setStatus("CONNECTED");
+      clearChat();
+      addMessage("You're now chatting with a stranger. Say hi!", { system: true });
+      setStatus("CONNECTED");
 
-    // ✅ КРИТИЧНО: махаме match нода веднага
-    try { await remove(matchRef()); } catch {}
+      // ✅ remove match immediately (kills reconnect duplicate join)
+      try { await remove(matchRef()); } catch {}
 
-    detachRoomListeners();
+      detachRoomListeners();
 
-    // ✅ Token: стар handler няма право да рендерира
-    const token = Symbol("listenToken");
-    window.__SF_LISTEN_TOKEN__ = token;
+      // ✅ token against old listeners
+      const token = Symbol("listenToken");
+      window.__SFCHAT_LISTEN_TOKEN__ = token;
 
-    messagesQ = query(messagesRootRef(roomId), orderByChild("at"), limitToLast(200));
-    messagesHandler = (snap) => {
-      if (window.__SF_LISTEN_TOKEN__ !== token) return;
+      messagesQ = query(messagesRootRef(roomId), orderByChild("at"), limitToLast(200));
 
-      const k = snap.key;
-      if (!k) return;
-      if (seenMsgKeys.has(k)) return;
-      seenMsgKeys.add(k);
+      messagesHandler = (snap) => {
+        if (window.__SFCHAT_LISTEN_TOKEN__ !== token) return;
 
-      const m = snap.val();
-      if (!m || !m.text) return;
+        const key = snap.key;
+        if (!key) return;
 
-      // UI dedupe (скрива стари дубли: различни key-ове, но еднакъв текст/време)
-      const t = String(m.text || "").trim();
-      const b = typeof m.clientAt === "number" ? Math.floor(m.clientAt / 1000) : 0; // 1s bucket
-      const sig = `${m.uid || ""}::${b}::${t}`;
-      const now = Date.now();
-      const last = recentSig.get(sig);
-      if (last && (now - last) < 3500) return;
-      recentSig.set(sig, now);
+        // ✅ global key dedupe
+        if (dedupeHit(D.keys, `${roomId}|${key}`, 10 * 60 * 1000)) return;
 
-      // prune
-      if (recentSig.size > 700) {
-        for (const [s, ts] of recentSig) {
-          if (now - ts > 6000) recentSig.delete(s);
-        }
-      }
+        const m = snap.val();
+        if (!m || !m.text) return;
 
-      addMessage(m.text, { personal: m.uid === uid });
-    };
+        const t = String(m.text || "").trim();
+        const ca = typeof m.clientAt === "number" ? m.clientAt : 0;
 
-    unsubMessages = onChildAdded(messagesQ, messagesHandler);
+        // ✅ global signature dedupe
+        const b = Math.floor(ca / SEND_BUCKET_MS);
+        const sig = `${roomId}|${m.uid || ""}|${b}|${t}`;
+        if (dedupeHit(D.sigs, sig, 8000)) return;
 
-    typingOn = false;
-    await setTyping(false);
+        addMessage(m.text, { personal: m.uid === uid });
+      };
 
-    joinLock = false;
+      unsubMessages = onChildAdded(messagesQ, messagesHandler);
+
+      typingOn = false;
+      await setTyping(false);
+    } finally {
+      joinLock = false;
+    }
   }
 
   async function findMatch() {
@@ -322,22 +321,24 @@ if (window.__SF_ROOMS_BOOTED__) {
     detachMatchListener();
 
     let otherUid = null;
+    let becameWaiting = false;
 
     await runTransaction(waitingRef(), (cur) => {
       if (cur === null) {
-        isWaiting = true;
-        return uid; // ставаш чакащ
+        becameWaiting = true;
+        return uid;
       }
       if (typeof cur === "string" && cur !== uid) {
-        otherUid = cur;   // намери друг
-        isWaiting = false;
-        return null;      // чистим slot-а
+        otherUid = cur;
+        becameWaiting = false;
+        return null;
       }
-      // ако е твоето uid или нещо друго -> не пипай
       return cur;
     });
 
-    // ✅ ти си matcher (първия), намери друг
+    isWaiting = becameWaiting;
+
+    // ✅ matcher side
     if (otherUid) {
       const roomId = push(ref(db, "rooms")).key;
 
@@ -346,26 +347,27 @@ if (window.__SF_ROOMS_BOOTED__) {
       updates[`rooms/${roomId}/participants/${otherUid}`] = true;
       updates[`rooms/${roomId}/createdAt`] = serverTimestamp();
 
-      // ✅ КРИТИЧНО: НЕ пишем matches/${uid} за matcher-а (точно това ти прави двойния join)
+      // ✅ CRITICAL FIX: match ONLY for the other user (NOT for yourself)
       updates[`matches/${otherUid}`] = { roomId, peer: uid, at: Date.now() };
 
       await update(ref(db), updates);
+
+      // safety: clear any stale match on our side
+      try { await remove(matchRef()); } catch {}
 
       await joinRoom(roomId, otherUid);
       return;
     }
 
-    // ✅ ти си чакащия -> чакай да ти запишат match
+    // ✅ waiting side
     setStatus("Searching…");
     unsubMatch = onValue(matchRef(), async (snap) => {
       const v = snap.val();
       if (!v || !v.roomId || !v.peer) return;
 
-      // ✅ гаранция: спри listener-а веднага
       detachMatchListener();
-
-      // ✅ чисти match нода веднага (убива повторение при reconnect)
       try { await remove(matchRef()); } catch {}
+      await safeClearWaitingSlotIfMine();
 
       await joinRoom(v.roomId, v.peer);
     });
@@ -381,7 +383,6 @@ if (window.__SF_ROOMS_BOOTED__) {
     const now = Date.now();
     const sig = `${text}::${uid}`;
 
-    // локално anti-double
     if (sending) return;
     if (sig === lastSendSig && (now - lastSendAt) < 300) return;
 
@@ -392,25 +393,16 @@ if (window.__SF_ROOMS_BOOTED__) {
     inputEl.value = "";
     inputEl.focus();
 
-    const clientMsgId = makeMsgId(uid, text, now);
+    const id = makeMsgId(uid, text, now);
 
     try {
-      await set(msgRef(currentRoomId, clientMsgId), {
+      await set(msgRef(currentRoomId, id), {
         uid,
         text,
-        clientMsgId,
+        clientMsgId: id,
         clientAt: now,
         at: serverTimestamp()
       });
-    } catch (e) {
-      // rules: ако вече съществува key-а (дедупе) -> PERMISSION_DENIED -> просто игнор
-      const s = String(e?.code || e?.message || e || "");
-      if (s.includes("PERMISSION_DENIED")) {
-        // ignore (means duplicate prevented)
-      } else {
-        console.error("send failed:", e);
-        addMessage("Send failed (network / permission).", { system: true });
-      }
     } finally {
       sending = false;
     }
@@ -420,22 +412,28 @@ if (window.__SF_ROOMS_BOOTED__) {
   btnFind.addEventListener("click", findMatch);
   btnNext.addEventListener("click", () => leaveRoom(true));
 
-  // ✅ Единен send pipeline: само submit
-  chatForm.addEventListener("submit", (e) => {
-    e.preventDefault();
-    sendMessage();
-  });
+  // ✅ single send pipeline
+  if (chatForm) {
+    chatForm.addEventListener("submit", (e) => {
+      e.preventDefault();
+      sendMessage();
+    });
+  } else {
+    sendBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      sendMessage();
+    });
+  }
 
-  // Enter = send, Shift+Enter = new line
   inputEl.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
       if (e.repeat) return;
       e.preventDefault();
-      chatForm.requestSubmit();
+      if (chatForm) chatForm.requestSubmit();
+      else sendMessage();
     }
   });
 
-  // typing pulse
   inputEl.addEventListener("input", () => {
     if (!joined) return;
     scheduleTypingPulse();
